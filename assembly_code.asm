@@ -1,31 +1,32 @@
-;; assembly_code.asm
+; assembly_code.asm
 section .text
-global vxorps
 global init
+global vxorps
+global vaddps
+global vfmadd132ps
+global vmovaps
+global vbroadcastf128
 
 init:
+    ; Initialization code here (if any)
     ret
 
 vxorps:
     vxorps ymm0, ymm0, ymm0
     ret
 
-global vaddps
 vaddps:
     vaddps ymm0, ymm1, ymm2
     ret
 
-global vfmadd132ps
 vfmadd132ps:
     vfmadd132ps ymm0, ymm1, ymm2
     ret
 
-global vmovaps
 vmovaps:
     vmovaps ymm0, [rsp]
     ret
 
-global vbroadcastf128
 vbroadcastf128:
     vbroadcastf128 ymm0, [rsp]
     ret
