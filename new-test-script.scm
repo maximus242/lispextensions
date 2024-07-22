@@ -67,7 +67,7 @@
           result-buffer))))
 
 ;; Load the shared library
-(load-extension "libinstructions.so" "init")
+(load-extension "./libinstructions.so" "init")
 
 ;; Define foreign functions
 (define vxorps (foreign-lambda void "vxorps"))
