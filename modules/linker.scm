@@ -1,8 +1,7 @@
-;; modules/linker.scm
 (define-module (linker)
   #:use-module (ice-9 match)
   #:use-module (srfi srfi-1)
-  #:export (linker-link link/flatten link/elf-wrapper))
+  #:export (link linker-link link/flatten link/elf-wrapper))
 
 (define (concat xs) (apply append xs))
 (define (catmap f xs) (concat (map f xs)))
@@ -13,9 +12,7 @@
     (string-concatenate (intersperse ":" (map symbol->string xs)))))
 
 (define (resolve-symbolic-addresses instructions symbol-table)
-  (display "Entering resolve-symbolic-addresses\n")
   (map (lambda (instr)
-         (display (format #f "Resolving instruction: ~a\n" instr))
          (match instr
            ;; Resolve symbolic addresses
            [(symbolic sym)
@@ -24,79 +21,44 @@
                   resolved
                   (error "Unresolved symbolic address" sym)))]
            ;; Handle const instruction without resolving
-           [`(const ,name ,value)
-            (display (format #f "Handling const: ~a\n" instr))
-            `(const ,name ,value)]
+           [`(const ,name ,value) instr]
            ;; Handle value instruction
-           [(list 'value n x)
-            (display (format #f "Handling value: ~a\n" instr))
-            instr]
+           [(list 'value n x) instr]
            ;; Handle other instructions unchanged
-           [else
-            (display (format #f "Handling other: ~a\n" instr))
-            instr]))
+           [else instr]))
        instructions))
 
 (define (linker-link objs)
-  (display "Entering linker-link\n")
-  
-  ;; Print the input objects
-  (display (format #f "Input objects: ~a\n" objs))
-  
   (let* ((flattened (catmap link/flatten objs))
          (symbols (map (lambda (obj)
                          (match obj
-                           ;; Handle the object type
                            [(object ,name ,type . ,body)
-                            (display (format #f "Processing object: ~a\n" obj))
                             (cons name (length body))]
-                           ;; Handle the const type
-                           [(const ,name $)
-                            (display (format #f "Processing const: ~a\n" obj))
-                            (cons name 0)]
-                           [else
-                            (display (format #f "Unexpected object structure: ~a\n" obj))
-                            #f]))
+                           [(const ,name $) (cons name 0)]
+                           [else #f]))
                        flattened))
          (filtered-symbols (filter (lambda (x) x) symbols))
          (symbol-table (make-hash-table)))
     
     ;; Populate symbol table
-    (display (format #f "Symbols: ~a\n" filtered-symbols))
     (for-each (lambda (sym)
-                (display (format #f "Adding to symbol table: ~a\n" sym))
                 (hash-set! symbol-table (car sym) (cdr sym)))
               filtered-symbols)
     
     ;; Resolve symbolic addresses
-    (let ((resolved (map (lambda (obj)
-                           (match obj
-                             [(object ,name ,type . ,body)
-                              (display (format #f "Resolving object: ~a\n" obj))
-                              (let ((resolved-body (resolve-symbolic-addresses body symbol-table)))
-                                (display (format #f "Resolved body: ~a\n" resolved-body))
-                                (object ,name ,type . ,resolved-body))]
-                             ;; Directly include const types as they don't need resolving
-                             [(const ,name $)
-                              (display (format #f "Including const without resolving: ~a\n" obj))
-                              obj]
-                             [(modrm ,mod ,reg ,rm)
-                              (display (format #f "Handling modrm: ~a\n" obj))
-                              obj]
-                             [(byte ,b)
-                              (display (format #f "Handling byte: ~a\n" obj))
-                              obj]
-                             [else
-                              (display (format #f "Unexpected object structure during resolve: ~a\n" obj))
-                              obj]))
-                         flattened)))
-      (display (format #f "Resolved objects: ~a\n" resolved))
-      resolved)))
+    (map (lambda (obj)
+           (match obj
+             [(object ,name ,type . ,body)
+              (let ((resolved-body (resolve-symbolic-addresses body symbol-table)))
+                (object ,name ,type . ,resolved-body))]
+             ;; Directly include const types as they don't need resolving
+             [(const ,name $) obj]
+             [else obj]))
+         flattened)))
 
 (define (link/flatten obj)
   (match obj
     [`(object ,name ,type . ,body)
-     (display (format #f "Flattening object: ~a\n" obj))
      `((const ,name $) ,@body (const ,(symcat name 'end) $))]
     [err (error "Invalid Object" err)]))
 
