@@ -1,0 +1,11 @@
+%%%% Starting test test-vaddps_mm256_add_ps
+Group begin: test-vaddps_mm256_add_ps
+Test begin:
+  source-file: "/Users/cloud/programming/lisp_project/test-example.scm"
+  source-line: 12
+  source-form: (test-assert (equal? (quote (197 244 88 194)) (bin/resolve (linker-link (decls (quote ((asm add_ps (vaddps ymm0 ymm1 ymm2)))))))))
+Test end:
+  result-kind: pass
+  actual-value: #t
+Group end: test-vaddps_mm256_add_ps
+# of expected passes      1
