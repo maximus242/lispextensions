@@ -1,6 +1,12 @@
-(use-modules (system foreign) (system base types))
+;; simple_test.scm
+(use-modules (system foreign))
 
-(define hello-world
-  (foreign-lambda void "puts" (c-string)))
+;; Dynamically link the C standard library
+(define libc (dynamic-link "libc.so.6"))
 
-(hello-world "Hello, World!")
+;; Get the 'puts' function from the C standard library
+(define c-puts
+  (pointer->procedure int (dynamic-func "puts" libc) (list c-string)))
+
+;; Call the 'puts' function
+(c-puts "Hello, World!")
