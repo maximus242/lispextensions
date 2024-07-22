@@ -1,4 +1,4 @@
-;; new-test-script.scm 
+;; new-test-script.scm
 (add-to-load-path "modules")
 
 (use-modules (hexdump)
@@ -8,7 +8,9 @@
              (rnrs io ports)
              (rnrs files)
              (rnrs bytevectors)
-             (ice-9 format))
+             (ice-9 format)
+             (system foreign)
+             (system foreign-library))
 
 ;; Assembly instructions
 (define vxorps-code
@@ -67,16 +69,29 @@
           result-buffer))))
 
 ;; Load the shared library
-(load-extension "./libinstructions.so" "init")
-
-(use-modules (system foreign))
+(define libinstructions (dynamic-link "./libinstructions.so"))
 
 ;; Define foreign functions
-(define vxorps (foreign-lambda void "vxorps"))
-(define vaddps (foreign-lambda void "vaddps"))
-(define vfmadd132ps (foreign-lambda void "vfmadd132ps"))
-(define vmovaps (foreign-lambda void "vmovaps"))
-(define vbroadcastf128 (foreign-lambda void "vbroadcastf128"))
+(define vxorps
+  (pointer->procedure void
+                      (dynamic-func "vxorps" libinstructions)
+                      '()))
+(define vaddps
+  (pointer->procedure void
+                      (dynamic-func "vaddps" libinstructions)
+                      '()))
+(define vfmadd132ps
+  (pointer->procedure void
+                      (dynamic-func "vfmadd132ps" libinstructions)
+                      '()))
+(define vmovaps
+  (pointer->procedure void
+                      (dynamic-func "vmovaps" libinstructions)
+                      '()))
+(define vbroadcastf128
+  (pointer->procedure void
+                      (dynamic-func "vbroadcastf128" libinstructions)
+                      '()))
 
 ;; Example usage
 (vxorps)
