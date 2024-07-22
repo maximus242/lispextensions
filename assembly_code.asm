@@ -1,6 +1,11 @@
 ;; assembly_code.asm
 section .text
 global vxorps
+global init
+
+init:
+    ret
+
 vxorps:
     vxorps ymm0, ymm0, ymm0
     ret

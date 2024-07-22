@@ -69,6 +69,8 @@
 ;; Load the shared library
 (load-extension "./libinstructions.so" "init")
 
+(use-modules (system foreign))
+
 ;; Define foreign functions
 (define vxorps (foreign-lambda void "vxorps"))
 (define vaddps (foreign-lambda void "vaddps"))
