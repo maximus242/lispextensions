@@ -1,4 +1,3 @@
-;; modules/asm.scm
 (define-module (asm)
   #:use-module (ice-9 match)
   #:use-module (srfi srfi-1)
@@ -75,6 +74,9 @@
 (define (asm/regix reg)
   "Translates a symbolic register name into an index."
   (match reg
+    ['eax 0] ['ecx 1] ['edx 2] ['ebx 3]
+    ['esp 4] ['ebp 5] ['esi 6] ['edi 7]
+    ['rdi 7] ['rsi 6] ['rdx 2] ['rcx 1] ['rax 0]
     ['ymm0 0] ['ymm1 1] ['ymm2 2] ['ymm3 3]
     ['ymm4 4] ['ymm5 5] ['ymm6 6] ['ymm7 7]
     [x (error "Invalid Register" reg)]))
@@ -186,5 +188,13 @@
              (display (format #f "vfmadd132ps - modrm byte: ~a\n" modrm-byte))
              (list (u8 #xC4) (u8 #xE2) (u8 #x75) (u8 #x98) (u8 modrm-byte)))
            (error "Invalid vfmadd132ps registers" dst src1 src2)))]
+    ;; Handle mov.imm32 instruction
+    [`(mov.imm32 ,rd ,imm)
+     (let ((rd-ix (asm/regix rd)))
+       (display (format #f "mov.imm32 - rd: ~a, imm: ~a\n" rd imm))
+       (if rd-ix
+           ;; Generate the correct bytecode for mov.imm32
+           (list (u8 (+ #xB8 rd-ix)) (u32 imm))
+           (error "Invalid mov.imm32 register" rd)))]
     ;; Handle other instructions
     [err (error "Invalid Instruction" err)]))
