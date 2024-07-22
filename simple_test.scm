@@ -6,7 +6,7 @@
 
 ;; Get the 'puts' function from the C standard library
 (define c-puts
-  (pointer->procedure int (dynamic-func "puts" libc) (list c-string)))
+  (pointer->procedure int (dynamic-func "puts" libc) (list (foreign-type "char*"))))
 
 ;; Call the 'puts' function
 (c-puts "Hello, World!")
