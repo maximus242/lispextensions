@@ -5,8 +5,11 @@ result  times 32 db 0
 multiplier dd 0x40000000, 0x40000000, 0x40000000, 0x40000000
            dd 0x40000000, 0x40000000, 0x40000000, 0x40000000
 
+fmt db '%02x', 0
+
 section .text
 global _start
+extern printf
 
 _start:
     ; Load addresses of buffers into registers
@@ -32,7 +35,22 @@ _start:
     vxorps ymm2, ymm2, ymm2
     vmovaps [rdx + 32], ymm2
 
+    ; Print result buffer
+    mov rdi, result
+    call print_result
+
     ; Exit
     mov eax, 60       ; syscall: exit
     xor edi, edi      ; status: 0
     syscall
+
+print_result:
+    ; Loop to print each byte in the result buffer
+    mov rcx, 32        ; Number of bytes to print
+print_loop:
+    movzx rsi, byte [rdi] ; Load byte into rsi
+    lea rdi, [fmt]     ; Load format string into rdi
+    call printf        ; Call printf
+    inc rdi            ; Move to next byte
+    loop print_loop    ; Loop until rcx is 0
+    ret
