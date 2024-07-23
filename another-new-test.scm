@@ -38,7 +38,7 @@
     (asm result
          (value 32 (repeat 32 0)))
     (asm multiplier
-         (value 32 (repeat 8 0x40000000))) ;; 2.0 in IEEE 754 floating-point
-    ))
+         (value 32 (repeat 8 #vu8(64 0 0 0))) ;; 2.0 in IEEE 754 floating-point
+    )))
 
 (hexdump (bin/resolve (linker-link (decls *code*))))

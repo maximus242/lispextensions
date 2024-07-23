@@ -34,19 +34,15 @@
                    [(#x00) 0]   ;; Memory addressing mode without displacement
                    [(#x02) 64]  ;; Memory addressing mode with 8-bit displacement
                    [(#x05) 0]   ;; Memory addressing mode with 32-bit displacement
-                   ;; Add other addressing modes if needed
                    [else (error "Invalid mod value" mod)]))
         (reg-val (asm/regix reg))
-        (rm-val (case rm
-                  [(rdi) 5]  ;; Memory addressing via rdi register with 32-bit displacement
-                  ;; Add other memory registers as needed
-                  [else (asm/regix rm)])))
-    (if (and (not (eq? reg-val #f)) (not (eq? rm-val #f)))
-        (begin
-          (display (format #f "modrm intermediate values - mod-val: ~a, reg-val: ~a, rm-val: ~a\n" mod-val reg-val rm-val))
-          (let ((result (+ mod-val (* 8 reg-val) rm-val))) ;; Ensure correct bit shifting
-            (display (format #f "modrm result: ~a\n" result))
-            result))
+        (rm-val (if (symbol? rm)
+                    5 ;; Placeholder for memory operand
+                    (asm/regix rm))))
+    (if (and reg-val rm-val)
+        (let ((result (+ mod-val (* 8 reg-val) rm-val)))
+          (display (format #f "modrm result: ~a\n" result))
+          result)
         (error "Invalid modrm values" mod reg rm))))
 
 (define (asm xs)
@@ -92,9 +88,14 @@
   "Convert two byte values to their string representation."
   `((byte ,byte1) (byte ,byte2)))
 
-(define (u32 byte1 byte2 byte3 byte4)
-  "Convert four byte values to their string representation."
-  `((byte ,byte1) (byte ,byte2) (byte ,byte3) (byte ,byte4)))
+(define (u32 imm)
+  (if (integer? imm)
+      (list (u8 (modulo imm 256))
+            (u8 (modulo (quotient imm 256) 256))
+            (u8 (modulo (quotient imm 65536) 256))
+            (u8 (quotient imm 16777216)))
+      ;; Handle symbolic addresses
+      (u32-symbolic 0 0 0 imm)))
 
 (define (u32-symbolic byte1 byte2 byte3 sym)
   "Handle u32 instruction with symbolic address"
@@ -113,9 +114,9 @@
                             (display (format #f "Desugaring u16 bytes: ~a, ~a\n" byte1 byte2))
                             `((byte ,byte1) (byte ,byte2)))]
     ;; Handle u32 instruction with four bytes
-    [`(u32 ,byte1 ,byte2 ,byte3 ,byte4) (begin
-                                          (display (format #f "Desugaring u32 bytes: ~a, ~a, ~a, ~a\n" byte1 byte2 byte3 byte4))
-                                          `((byte ,byte1) (byte ,byte2) (byte ,byte3) (byte ,byte4)))]
+    [`(u32 ,imm) (begin
+                   (display (format #f "Desugaring u32 with imm: ~a\n" imm))
+                   (u32 imm))]
     ;; Handle u32 instruction with symbolic addresses
     [`(u32 ,byte1 ,byte2 ,byte3 ,sym)
      (begin
@@ -150,7 +151,19 @@
              (display (format #f "vaddps - modrm byte: ~a\n" modrm-byte))
              (list (u8 #xC5) (u8 #xF4) (u8 #x58) (u8 modrm-byte)))
            (error "Invalid vaddps registers" dst src1 src2)))]
-    ;; Handle vmovaps instruction
+    ;; Handle vmovaps instruction with memory operand as destination
+    [`(vmovaps ,(mem-op) ,src)
+     (let ((src-ix (asm/regix src)))
+       (display (format #f "vmovaps - mem-op: ~a, src: ~a\n" mem-op src))
+       (display (format #f "vmovaps - src-ix: ~a\n" src-ix))
+       ;; Check if the registers are valid
+       (if src-ix
+           ;; Generate the correct bytecode for vmovaps with memory operand as destination
+           (let ((modrm-byte (modrm #x00 src mem-op))) ;; Memory addressing mode
+             (display (format #f "vmovaps - modrm byte: ~a\n" modrm-byte))
+             (list (u8 #xC5) (u8 #xFC) (u8 #x29) (u8 modrm-byte) (u8 #x00) (u8 #x00) (u8 #x00) (u8 #x00)))
+           (error "Invalid vmovaps register or memory operand" src mem-op)))]
+    ;; Handle vmovaps instruction with memory operand as source
     [`(vmovaps ,dst ,(mem-op))
      (let ((dst-ix (asm/regix dst)))
        (display (format #f "vmovaps - dst: ~a, mem-op: ~a\n" dst mem-op))
@@ -193,8 +206,18 @@
      (let ((rd-ix (asm/regix rd)))
        (display (format #f "mov.imm32 - rd: ~a, imm: ~a\n" rd imm))
        (if rd-ix
-           ;; Generate the correct bytecode for mov.imm32
            (list (u8 (+ #xB8 rd-ix)) (u32 imm))
            (error "Invalid mov.imm32 register" rd)))]
+    ;; Handle syscall instruction
+    [`(syscall)
+     (list (u8 #x0F) (u8 #x05))]
+    ;; Handle xor instruction
+    [`(xor ,dst ,src)
+     (let ((dst-ix (asm/regix dst))
+           (src-ix (asm/regix src)))
+       (if (and dst-ix src-ix)
+           (let ((modrm-byte (modrm #xC0 dst src)))
+             (list (u8 #x33) (u8 modrm-byte)))
+           (error "Invalid xor registers" dst src)))]
     ;; Handle other instructions
     [err (error "Invalid Instruction" err)]))
