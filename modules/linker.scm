@@ -31,31 +31,48 @@
 
 (define (linker-link objs)
   (let* ((flattened (catmap link/flatten (link/elf-wrapper objs)))
-         (symbols (map (lambda (obj)
-                         (match obj
-                           [(object ,name ,type . ,body)
-                            (cons name (length body))]
-                           [(const ,name $) (cons name 0)]
-                           [else #f]))
-                       flattened))
-         (filtered-symbols (filter (lambda (x) x) symbols))
          (symbol-table (make-hash-table)))
-    
-    ;; Populate symbol table
-    (for-each (lambda (sym)
-                (hash-set! symbol-table (car sym) (cdr sym)))
-              filtered-symbols)
+
+    ;; Populate symbol table with placeholder values
+    (for-each (lambda (obj)
+                (match obj
+                  [(object ,name ,type . ,body)
+                   (display (format #f "Adding object to symbol table: ~a\n" name))
+                   (hash-set! symbol-table name 0)] ; Placeholder value
+                  [(const ,name $)
+                   (display (format #f "Adding const to symbol table: ~a\n" name))
+                   (hash-set! symbol-table name 0)]
+                  [else (display (format #f "Invalid object or const encountered: ~a\n" obj))
+                        (error "Invalid object or const" obj)]))
+              flattened)
     
     ;; Resolve symbolic addresses
-    (map (lambda (obj)
-           (match obj
-             [(object ,name ,type . ,body)
-              (let ((resolved-body (resolve-symbolic-addresses body symbol-table)))
-                (object ,name ,type . ,resolved-body))]
-             ;; Directly include const types as they don't need resolving
-             [(const ,name $) obj]
-             [else obj]))
-         flattened)))
+    (let ((resolved-objs (map (lambda (obj)
+                                (match obj
+                                  [(object ,name ,type . ,body)
+                                   (let ((resolved-body (resolve-symbolic-addresses body symbol-table)))
+                                     (display (format #f "Resolved object: ~a\n" `(object ,name ,type ,@resolved-body)))
+                                     `(object ,name ,type ,@resolved-body))]
+                                  [(const ,name $)
+                                   (display (format #f "Keeping const unchanged: ~a\n" obj))
+                                   obj]
+                                  [else (display (format #f "Invalid object or const encountered during resolution: ~a\n" obj))
+                                        (error "Invalid object or const" obj)]))
+                              flattened)))
+
+      ;; Update symbol table with correct lengths
+      (for-each (lambda (obj)
+                  (match obj
+                    [(object ,name ,type . ,body)
+                     (display (format #f "Updating symbol table for object: ~a with length: ~a\n" name (length body)))
+                     (hash-set! symbol-table name (length body))]
+                    [(const ,name $)
+                     (display (format #f "Updating symbol table for const: ~a\n" name))
+                     (hash-set! symbol-table name 0)]
+                    [else (display (format #f "Invalid object or const encountered during final update: ~a\n" obj))
+                          (error "Invalid object or const" obj)]))
+                resolved-objs)
+      resolved-objs)))
 
 (define (link/flatten obj)
   (match obj

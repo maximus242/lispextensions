@@ -43,9 +43,20 @@
 (define (assq-delete-all key alist)
   (filter (lambda (pair) (not (eq? (car pair) key))) alist))
 
+(define (my-type obj)
+  (cond
+    ((pair? obj) 'pair)
+    ((null? obj) 'null)
+    ((symbol? obj) 'symbol)
+    ((number? obj) 'number)
+    ((string? obj) 'string)
+    ((vector? obj) 'vector)
+    ((procedure? obj) 'procedure)
+    (else 'unknown)))
+
 (define (bin/consts off stmts env)
+  (display (format #f "bin/consts called with off: ~a, stmts: ~a, env: ~a\n" off stmts env))
   (let ((off (if (number? off) off 0)))  ;; Default offset is 0 if not provided
-    (display (format #f "Processing consts at offset ~a: ~a\n" off stmts))
     (match stmts
       ;; Base case: empty statements list
       [`()
@@ -112,15 +123,37 @@
                (let ((byte (car b)))
                  (display (format #f "Adding nested byte: ~a\n" byte))
                  (loop (cdr b) (+ new-off 1))))))]
-      
+
+
       ;; Handle complex nested statements
       [(lst . rest)
        (begin
-         (display (format #f "Processing nested list: ~a with rest: ~a\n" lst rest))
-         (if (list? lst)
-             (let ((result (bin/consts off lst env)))
-               (bin/consts (car result) rest (cdr result)))
-             (error "Unexpected non-list structure" lst)))]
+         (display (format #f "Processing nested list or symbol: ~a with rest: ~a offset: ~a and env ~a\n" lst rest off env))
+         (display (format #f "Type of lst: ~a\n" (my-type lst)))
+         (cond
+           ((list? lst)
+            (display "Checking if lst is a list... It is a list.\n")
+            (let ((result (begin
+                            (display (format #f "Calling bin/consts with offset: ~a lst: ~a env: ~a\n" off lst env))
+                            (bin/consts off lst env))))
+              (display (format #f "Result of bin/consts call: ~a\n" result))
+              (begin
+                (display (format #f "Calling bin/consts with offset: ~a rest: ~a env: ~a\n" (car result) rest (cdr result)))
+                (bin/consts (car result) rest (cdr result)))))
+           ((symbol? lst)
+            (display (format #f "Processing symbol: ~a with rest: ~a offset: ~a and env ~a\n" lst rest off env))
+            (let ((val (assoc-ref env lst)))
+              (if val
+                  (begin
+                    (display (format #f "Symbol ~a found in env with value: ~a\n" lst val))
+                    ;; Assuming that val should be processed similarly to a list or a value
+                    (bin/consts off (cons val rest) env))
+                  (begin
+                    (display (format #f "Undefined symbol: ~a\n" lst))
+                    (error "Undefined symbol" lst)))))
+           (else
+            (display (format #f "Unexpected non-list, non-symbol structure: ~a\n" lst))
+            (error "Unexpected non-list, non-symbol structure" lst))))]
       
       ;; Catch-all pattern for invalid statements
       [else
