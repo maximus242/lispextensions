@@ -2,7 +2,7 @@ section .data
 buffer1 db '12345678123456781234567812345678'
 buffer2 db '87654321876543218765432187654321'
 result times 32 db 0
-multiplier db 40h, 00h, 00h, 00h, 40h, 00h, 00h, 00h, 40h, 00h, 00h, 00h, 40h, 00h, 00h, 00h
+multiplier times 8 dd 0x40000000  ; 2.0 in IEEE 754 floating-point
 
 section .text
 global _start
