@@ -13,9 +13,9 @@ multiplier:
 .globl _start
 _start:
     # Load addresses of buffers into registers
-    lea rdi, [buffer1]
-    lea rsi, [buffer2]
-    lea rdx, [result]
+    lea rdi, buffer1
+    lea rsi, buffer2
+    lea rdx, result
 
     # Load data from buffers into YMM registers
     vmovaps ymm0, [rdi]
@@ -25,7 +25,7 @@ _start:
     vaddps ymm2, ymm0, ymm1
 
     # Multiply the result by the constant (2.0)
-    vmovaps ymm3, [multiplier]
+    vmovaps ymm3, multiplier
     vfmadd132ps ymm2, ymm2, ymm3
 
     # Store the result back into the result buffer
