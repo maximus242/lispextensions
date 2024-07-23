@@ -1,6 +1,7 @@
 (define-module (linker)
   #:use-module (ice-9 match)
   #:use-module (srfi srfi-1)
+  #:use-module (asm)
   #:export (link linker-link link/flatten link/elf-wrapper))
 
 (define (concat xs) (apply append xs))
@@ -29,7 +30,7 @@
        instructions))
 
 (define (linker-link objs)
-  (let* ((flattened (catmap link/flatten objs))
+  (let* ((flattened (catmap link/flatten (link/elf-wrapper objs)))
          (symbols (map (lambda (obj)
                          (match obj
                            [(object ,name ,type . ,body)
