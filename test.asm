@@ -36,7 +36,7 @@ _start:
     vmovaps [rdx + 32], ymm2
 
     ; Print result buffer
-    mov rdi, result
+    lea rdi, [result]
     call print_result
 
     ; Exit
@@ -51,6 +51,6 @@ print_loop:
     movzx rsi, byte [rdi] ; Load byte into rsi
     lea rdi, [fmt]     ; Load format string into rdi
     call printf        ; Call printf
-    inc rdi            ; Move to next byte
+    add rdi, 1         ; Move to next byte
     loop print_loop    ; Loop until rcx is 0
     ret
