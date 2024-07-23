@@ -1,4 +1,5 @@
 .section .data
+.align 32
 buffer1:
     .ascii "12345678123456781234567812345678"
 buffer2:
