@@ -1,13 +1,170 @@
-(define-module (asm)
-  #:use-module (ice-9 match)
-  #:use-module (srfi srfi-1)
-  #:use-module (ice-9 format)
-  #:export (decls decls/expand modrm asm asm/regix string->bytes asm/desugar u8 u16 u32 u32-symbolic))
+;;;; Modified from http://www.willdonnelly.net/blog/2021-05-06-scheme-x86-assembler/ to work with Guile.
+
+(use-modules (ice-9 match)
+	     (srfi srfi-1))
+
+;; =================================
+;; Printing Binary Data as a Hexdump
+;; =================================
+
+(define (chunk n xs)
+  (cond
+    [(null? xs) '()]
+    [(> n (length xs)) (list xs)]
+    [#t (cons (take xs n) (chunk n (drop xs n)))]))
+
+(define (hex8 x)
+  (set! x (number->string (+ 256 x) 16))
+  (set! x (string-append "00" x))
+  (substring x (- (string-length x) 2)))
+
+(define (hexline xs)
+  (string-append (string-concatenate (map hex8 xs)) "\n"))
+
+(define (hexdump xs)
+  (display (string-concatenate (map hexline (chunk 16 xs)))))
+
+;; ================================
+;; BIN: Binary Description Language
+;; ================================
+;;
+;; At the bottom of the stack of translations is a
+;; tiny language for describing binary files. This
+;; language has the following forms:
+;;
+;;   (ORIGIN 123)   Set the current address to 123
+;;   (ALIGN 16)     Zero pad to a multiple of 16
+;;   (CONST n x)    Evaluate X and define constant N
+;;   (VALUE k x)    Evaluate X and emit as K bytes
+;;
+;; The resolution proceeds in two passes. First all
+;; CONST statements are evaluated in order to produce
+;; a name-value mapping, then all VALUE statements
+;; are evaluated in order to produce output bytes.
+
+(define (bin/eval expr addr env)
+  "Resolve a value expression into an actual number."
+  (define (subexpr x) (bin/eval x addr env))
+  (match expr
+    ['$ addr]
+    [(? integer?) expr]
+    [(? symbol?)
+     (if (assoc expr env)
+         (cdr (assoc expr env))
+         (error "Not Defined" expr))]
+    [`(+ . ,xs) (apply + (map subexpr xs))]
+    [`(- . ,xs) (apply - (map subexpr xs))]
+    [`(* . ,xs) (apply * (map subexpr xs))]
+    [`(/ ,x ,y) (quotient (subexpr x) (subexpr y))]
+    [`(% ,x ,y) (modulo (subexpr x) (subexpr y))]
+    [err (error "Invalid Expression" err)]))
+
+(define (bin/bytes len val out)
+  "Expand VAL into LEN bytes (little-endian)."
+  (if (<= len 0) out
+    (bin/bytes (- len 1) (floor (/ val 256))
+      (cons (modulo val 256) out))))
+
+(define (bin/values out off stmts env)
+  "Assemble primitive statements into a list of bytes."
+  (match stmts
+    [`() (reverse out)]
+    [`((const ,name ,expr) . ,xs) (bin/values out off xs env)]
+    [`((origin ,newoff) . ,xs) (bin/values out newoff xs env)]
+    [`((align ,size) . ,xs)
+      (let ((len (modulo (- 0 off) size)))
+	(bin/values (bin/bytes len 0 out)
+          (+ off len) xs env))]
+    [`((value ,n ,x) . ,xs)
+     (let ([val (bin/eval x off env)])
+       (bin/values (bin/bytes n val out)
+         (+ off n) xs env))]
+    [err (error "Invalid Statement" err)]))
+
+(define (bin/consts off stmts env)
+  "Accumulate a mapping from constant names to offsets."
+  (match stmts
+    [`() env]
+    [`((const ,name ,expr) . ,xs)
+     (if (assoc name env)
+       (error "Already Defined" name)
+       (bin/consts off xs
+         (cons (cons name (bin/eval expr off env)) env)))]
+    [`((origin ,newoff) . ,xs) (bin/consts newoff xs env)]
+    [`((align ,size) . ,xs)
+      (let ((len (modulo (- 0 off) size)))
+        (bin/consts (+ off len) xs env))]
+    [`((value ,n ,x) . ,xs) (bin/consts (+ off n) xs env)]
+    [err (error "Invalid Statement" err)]))
+
+(define (bin/resolve stmts)
+  (bin/values '() 0 stmts (bin/consts 0 stmts '())))
+
+;; =============================================
+;; LINK: Combining and Renaming Chunks of Binary
+;; =============================================
+;;
+;; The linker is responsible for combining relocatable
+;; "objects" into a (Linux ELF) binary. The current linker
+;; is trivial and just shoves everything into a single
+;; RWX segment, but could be improved to handle different
+;; "types" of object (text/data/bss/rodata/etc).
+
+(define (concat xs) (apply append xs))
+(define (catmap f xs) (concat (map f xs)))
+(define (intersperse y xs)
+  (cdr (apply append (map (lambda (x) (list y x)) xs))))
+(define (symcat . xs)
+  "Concatenate symbols with ':' in between"
+  (string->symbol
+    (string-concatenate (intersperse ":" (map symbol->string xs)))))
+
+(define (link objs)
+  (catmap link/flatten (link/elf-wrapper objs)))
+
+(define (link/flatten obj)
+  (match obj
+    [`(object ,name ,type . ,body)
+     `((const ,name $) ,@body (const ,(symcat name 'end) $))]
+    [err (error "Invalid Object" err)]))
+
+(define (link/elf-wrapper syms)
+  "Wraps SYMS in a 32bit x86 ELF header."
+  `((object %forig% data (origin #x08048000))
+    (object %fbase% data)
+    (object %elfhdr% data ,@(asm
+      `((u8 127 69 76 70 1 1 1 3)  ;; ident[0:8]
+        (u8 0 0 0 0 0 0 0 0)       ;; ident[8:16]
+        (u16 2 3)                  ;; type/machine
+        (u32 1 %start%)            ;; version/entry
+        (u32 (- %elfpht% %fbase%)) ;; phoff
+        (u32 0 0)                  ;; shoff/flags
+        (u16 52 32 1)              ;; ehsize/phentsize/phnum
+        (u16 0 0 0))))             ;; shentsize/shnum/shstrndx
+    (object %elfpht% data ,@(asm
+      `((u32 1 0)                   ;; type/offset
+        (u32 %fbase% %fbase%)       ;; vaddr/paddr
+        (u32 (- %flast% %fbase%))   ;; filesz
+        (u32 (- %flast% %fbase%))   ;; memsz
+        (u32 7 4096))))             ;; flags/align
+    ,@syms
+    (object %start% exec ,@(asm
+      `((call init)
+        (mov ebx eax)               ;; Exit Status
+        (mov.imm32 eax 1)           ;; Syscall 1 (Exit)
+        (int #x80))))
+    (object %flast% data)))
+
+;; ============================
+;; DECL: Top-Level Declarations
+;; ============================
 
 (define (decls xs)
   "Iteratively desugar declarations into OBJECTs."
   (define (step out xs)
     (match xs
+      ;; [`((object ,@b) ,@ys) (step (cons (car xs) out) ys)]
+      ;; [`(,d ,@ys) (step out (append (decls/expand d) ys))]
       [(('object b ...) ys ...)
        (step (cons (car xs) out) ys)]
       [(d ys ...)
@@ -25,47 +182,25 @@
     [('asm name body ...)
      `((object ,name code ,@(asm body)))]
     [('func name args body ...)
-     (error "This is an Assembler, Not a Compiler!" name)]
+      (error "This is an Assembler, Not a Compiler!" name)]
     [err (error "Invalid Declaration" err)]))
 
-(define (modrm mod reg rm)
-  (let ((mod-val (case mod
-                   [(#xC0) 192] ;; Direct register addressing
-                   [(#x00) 0]   ;; Memory addressing mode without displacement
-                   [(#x02) 64]  ;; Memory addressing mode with 8-bit displacement
-                   [(#x05) 0]   ;; Memory addressing mode with 32-bit displacement
-                   [else (error "Invalid mod value" mod)]))
-        (reg-val (asm/regix reg))
-        (rm-val (if (symbol? rm)
-                    5 ;; Placeholder for memory operand
-                    (asm/regix rm))))
-    (if (and reg-val rm-val)
-        (let ((result (+ mod-val (* 8 reg-val) rm-val)))
-          (display (format #f "modrm result: ~a\n" result))
-          result)
-        (error "Invalid modrm values" mod reg rm))))
+;; =======================================
+;; ASM: Translating the x86 ISA into Bytes
+;; =======================================
+;;
+;; Lowers the platform instruction set into a sequence
+;; of CONST and VALUE statements by repeatedly applying
+;; a desugaring transform.
 
 (define (asm xs)
-  (display "Entering asm function\n")
   (define (step out xs)
     (match xs
-      [`((const ,n ,x) . ,ys)
-       (display (format #f "Adding const: ~a ~a\n" n x))
-       (step (append out `((const ,n ,x))) ys)]
-      [`((value ,n ,x) . ,ys)
-       (display (format #f "Adding value: ~a ~a\n" n x))
-       (step (append out `((value ,n ,x))) ys)]
-      [`(,inst . ,ys)
-       (begin
-         (display (format #f "Desugaring instruction: ~a\n" inst))
-         (let ((desugared (asm/desugar inst)))
-           (display (format #f "Desugared to: ~a\n" desugared))
-           (step (append out desugared) ys)))]
-      [_ out]))
-  (let ((result (step '() xs)))
-    (display (format #f "Final result: ~a\n" result))
-    (display "Exiting asm function\n")
-    result))
+      [`((const ,n ,x) . ,ys) (step `((const ,n ,x) . ,out) ys)]
+      [`((value ,n ,x) . ,ys) (step `((value ,n ,x) . ,out) ys)]
+      [`(,inst . ,ys) (step out (append (asm/desugar inst) ys))]
+      [_ (reverse out)]))
+  (step '() xs))
 
 (define (asm/regix reg)
   "Translates a symbolic register name into an index."
@@ -80,34 +215,16 @@
 (define (string->bytes str)
   (map char->integer (string->list str)))
 
-(define (u8 byte)
-  "Convert a byte value to its string representation."
-  `(byte ,byte))
-
-(define (u16 byte1 byte2)
-  "Convert two byte values to their string representation."
-  `((byte ,byte1) (byte ,byte2)))
-
-(define (u32 imm)
-  (if (integer? imm)
-      (list (u8 (modulo imm 256))
-            (u8 (modulo (quotient imm 256) 256))
-            (u8 (modulo (quotient imm 65536) 256))
-            (u8 (quotient imm 16777216)))
-      ;; Handle symbolic addresses
-      (u32-symbolic 0 0 0 imm)))
-
-(define (u32-symbolic byte1 byte2 byte3 sym)
-  "Handle u32 instruction with symbolic address"
-  `((byte ,byte1) (byte ,byte2) (byte ,byte3) (symbolic ,sym)))
-
 (define (asm/desugar inst)
-  "Decomposes a high-level instruction into a sequence of simpler instructions."
-  (display (format #f "Desugaring instruction: ~a\n" inst))
+  "Decomposes a high-level instruction into a sequence of"
+  "simpler instructions. Note that the resulting 'values'"
+  "are still expressions whose actual numeric value may"
+  "be computed in a later phase."
   (match inst
-        ;; Handle remaining instructions
+    ;; Data Literals
     [`(vals ,n) `()]
     [`(vals ,n ,x . ,xs) `((value ,n ,x) (vals ,n . ,xs))]
+    [`(u8 . ,xs)  `((vals 1 . ,xs))]
     [`(u16 . ,xs) `((vals 2 . ,xs))]
     [`(u32 . ,xs) `((vals 4 . ,xs))]
     [`(u64 . ,xs) `((vals 8 . ,xs))]
@@ -115,15 +232,19 @@
     [`(repeat 0 ,x) `()]
     [`(repeat ,n . ,xs) `(,@xs (repeat ,(- n 1) . ,xs))]
     [`(label ,n) `((const ,n $))]
+    ;; Instruction "Pieces"
     [`(disp ,addr)       `((u32 (- ,addr (+ $ 4))))]
     [`(disp.short ,addr) `((u8 (- ,addr (+ $ 1))))]
     [`(modrm ,mod ,rm) `((u8 (+ ,mod ,(asm/regix rm))))]
     [`(modrm ,mod ,reg ,rm)
      `((u8 (+ ,mod (* ,(asm/regix reg) 8) ,(asm/regix rm))))]
+    ;; Instructions
     [`(nop) `((u8 #x90))]
     [`(cdq) `((u8 #x99))]
     [`(inc ,rd) `((u8 (+ #x40 ,(asm/regix rd))))]
     [`(dec ,rd) `((u8 (+ #x48 ,(asm/regix rd))))]
+    [`(mov.imm32 ,rd ,x)
+     `((u8 (+ #xB8 ,(asm/regix rd))) (u32 ,x))]
     [`(add.imm32 ,rd ,n)
      `((u8 #x81) (modrm #xC0 ,rd) (u32 ,n))]
     [`(mov.ld32 ,rd esp)
@@ -142,7 +263,8 @@
     [`(add ,rd ,rs)      `((u8 #x03) (modrm #xC0 ,rd ,rs))]
     [`(sub ,rd ,rs)      `((u8 #x2B) (modrm #xC0 ,rd ,rs))]
     [`(and ,rd ,rs)      `((u8 #x23) (modrm #xC0 ,rd ,rs))]
-    [`(or ,rd ,rs)      `((u8 #x0B) (modrm #xC0 ,rd ,rs))]
+    [`( or ,rd ,rs)      `((u8 #x0B) (modrm #xC0 ,rd ,rs))]
+    [`(xor ,rd ,rs)      `((u8 #x33) (modrm #xC0 ,rd ,rs))]
     [`(cmp ,rd ,rs)      `((u8 #x3B) (modrm #xC0 ,rd ,rs))]
     [`(not ,rd)          `((u8 #xF7) (modrm #xD0 ,rd))]
     [`(neg ,rd)          `((u8 #xF7) (modrm #xD8 ,rd))]
@@ -166,27 +288,27 @@
     [`(call.reg ,rs) `((u8 #xFF (+ #xD0 ,(asm/regix rs))))]
     [`(call ,addr) `((u8 #xE8)      (disp ,addr))]
     [`(jmp ,addr)  `((u8 #xE9)      (disp ,addr))]
-    [`(jb ,addr)  `((u8 #x0F #x82) (disp ,addr))]
+    [`( jb ,addr)  `((u8 #x0F #x82) (disp ,addr))]
     [`(jae ,addr)  `((u8 #x0F #x83) (disp ,addr))]
-    [`(je ,addr)  `((u8 #x0F #x84) (disp ,addr))]
+    [`( je ,addr)  `((u8 #x0F #x84) (disp ,addr))]
     [`(jne ,addr)  `((u8 #x0F #x85) (disp ,addr))]
     [`(jbe ,addr)  `((u8 #x0F #x86) (disp ,addr))]
-    [`(ja ,addr)  `((u8 #x0F #x87) (disp ,addr))]
-    [`(jl ,addr)  `((u8 #x0F #x8C) (disp ,addr))]
+    [`( ja ,addr)  `((u8 #x0F #x87) (disp ,addr))]
+    [`( jl ,addr)  `((u8 #x0F #x8C) (disp ,addr))]
     [`(jge ,addr)  `((u8 #x0F #x8D) (disp ,addr))]
     [`(jle ,addr)  `((u8 #x0F #x8E) (disp ,addr))]
-    [`(jg ,addr)  `((u8 #x0F #x8F) (disp ,addr))]
+    [`( jg ,addr)  `((u8 #x0F #x8F) (disp ,addr))]
     [`(jmp.short ,addr) `((u8 #xEB) (disp.short ,addr))]
-    [`(jb.short ,addr) `((u8 #x72) (disp.short ,addr))]
+    [`( jb.short ,addr) `((u8 #x72) (disp.short ,addr))]
     [`(jae.short ,addr) `((u8 #x73) (disp.short ,addr))]
-    [`(je.short ,addr) `((u8 #x74) (disp.short ,addr))]
+    [`( je.short ,addr) `((u8 #x74) (disp.short ,addr))]
     [`(jne.short ,addr) `((u8 #x75) (disp.short ,addr))]
     [`(jbe.short ,addr) `((u8 #x76) (disp.short ,addr))]
-    [`(ja.short ,addr) `((u8 #x77) (disp.short ,addr))]
-    [`(jl.short ,addr) `((u8 #x7C) (disp.short ,addr))]
+    [`( ja.short ,addr) `((u8 #x77) (disp.short ,addr))]
+    [`( jl.short ,addr) `((u8 #x7C) (disp.short ,addr))]
     [`(jge.short ,addr) `((u8 #x7D) (disp.short ,addr))]
     [`(jle.short ,addr) `((u8 #x7E) (disp.short ,addr))]
-    [`(jg.short ,addr) `((u8 #x7F) (disp.short ,addr))]
+    [`( jg.short ,addr) `((u8 #x7F) (disp.short ,addr))]
     [`(set.eq ,rd) `((u8 #x0F #x94) (modrm #xC0 ,rd))]
     [`(set.ne ,rd) `((u8 #x0F #x95) (modrm #xC0 ,rd))]
     [`(set.lt ,rd) `((u8 #x0F #x9C) (modrm #xC0 ,rd))]
@@ -194,24 +316,6 @@
     [`(set.gt ,rd) `((u8 #x0F #x9F) (modrm #xC0 ,rd))]
     [`(set.ge ,rd) `((u8 #x0F #x9D) (modrm #xC0 ,rd))]
     [`(int ,n)     `((u8 #xCD ,n))]
-    ;; Handle u8 instruction with multiple bytes
-    [`(u8 . ,bytes) (begin
-                      (display (format #f "Desugaring multiple u8 bytes: ~a\n" bytes))
-                      (map (lambda (byte) `(byte ,byte)) bytes))]
-    ;; Handle u16 instruction with two bytes
-    [`(u16 ,byte1 ,byte2) (begin
-                            (display (format #f "Desugaring u16 bytes: ~a, ~a\n" byte1 byte2))
-                            `((byte ,byte1) (byte ,byte2)))]
-    ;; Handle u32 instruction with four bytes
-    [`(u32 ,imm) (begin
-                   (display (format #f "Desugaring u32 with imm: ~a\n" imm))
-                   (u32 imm))]
-    ;; Handle u32 instruction with symbolic addresses
-    [`(u32 ,byte1 ,byte2 ,byte3 ,sym)
-     (begin
-       (display (format #f "Desugaring u32 with symbolic address: ~a, ~a, ~a, ~a\n" byte1 byte2 byte3 sym))
-       ;; Treat the symbolic address as a placeholder to be resolved later
-       (u32-symbolic byte1 byte2 byte3 sym))]
     ;; Handle vxorps instruction
     [`(vxorps ,dst ,src1 ,src2)
      (let ((dst-ix (asm/regix dst))
@@ -309,6 +413,45 @@
              (list (u8 #x33) (u8 modrm-byte)))
            (error "Invalid xor registers" dst src)))]
 
-
     ;; Error
     [err (error "Invalid Instruction" err)]))
+
+;; ================
+;; Top-Level Driver
+;; ================
+
+(define *code*
+  '((asm init
+         ;; Load addresses of buffers into registers
+         (mov.imm32 rdi buffer1)
+         (mov.imm32 rsi buffer2)
+         (mov.imm32 rdx result)
+         ;; Load data from buffers into ymm registers
+         (vmovaps ymm0 (rdi))
+         (vmovaps ymm1 (rsi))
+         ;; Add the two buffers
+         (vaddps ymm2 ymm0 ymm1)
+         ;; Multiply the result by a constant (e.g., 2.0)
+         (vmovaps ymm3 (multiplier))
+         (vfmadd132ps ymm2 ymm2 ymm3)
+         ;; Store the result back into the result buffer
+         (vmovaps (rdx) ymm2)
+         ;; Zero out the result buffer
+         (vxorps ymm2 ymm2 ymm2)
+         (vmovaps (rdx) ymm2)
+         ;; Exit
+         (mov.imm32 eax 60)  ;; syscall: exit
+         (xor edi edi)       ;; status: 0
+         (syscall))
+
+    (asm buffer1
+         (value 32 (str "12345678123456781234567812345678")))
+    (asm buffer2
+         (value 32 (str "87654321876543218765432187654321")))
+    (asm result
+         (value 32 (repeat 32 0)))
+    (asm multiplier
+         (value 32 (repeat 8 #vu8(64 0 0 0))) ;; 2.0 in IEEE 754 floating-point
+    )))
+
+(hexdump (bin/resolve (link (decls *code*))))
